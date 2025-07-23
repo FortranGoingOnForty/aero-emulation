@@ -1,0 +1,49 @@
+# Compiled executables
+benchmark_cpu
+benchmark_cpu_fixed
+benchmark_cpu_complex
+benchmark_cpu_complex_debug
+benchmark_gpu
+benchmark_gpu_complex
+
+# Fortran module files
+*.mod
+*.smod
+
+# Object files
+*.o
+*.a
+*.so
+obj/
+
+# Output files
+*.out
+*.err
+*.log
+out/
+results/
+
+# SLURM job outputs
+# redundant I know
+slurm-*.out
+slurm-*.err
+job_*.out
+job_*.err
+
+# Test outputs
+test_*.txt
+cpu_*.txt
+gpu_*.txt
+*_result.txt
+*_results.txt
+
+# Performance profiling
+*.nvprof
+*.nvvp
+*.nsys-rep
+gmon.out
+*.gcda
+*.gcno
+*.gcov
+callgrind.out.*
+cachegrind.out.*
