@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:30:00
-#SBATCH --output=full_comparison_%j.out
+#SBATCH --output=out/full_comparison_%j.out
 
 cd ~/cmaq_aero_gpu_bench
 ulimit -s unlimited
