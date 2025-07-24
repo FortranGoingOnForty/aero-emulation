@@ -1,7 +1,30 @@
 // aero_kernel_complex.cu
+
 #include <cuda_runtime.h>
 #include <math.h>
 #include <stdio.h>
+
+/*
+ * ---------------------------------------------------------------------------
+ *  GPU aerosol microphysics proof‑of‑concept for CMAQ
+ *
+ *  This translation unit contains three CUDA kernels that collectively
+ *  emulate the most expensive portions of CMAQ’s AERO module:
+ *      • thermodynamic water‑uptake iterations
+ *      • sectional Brownian coagulation
+ *      • ternary H2SO4–NH3–H2O nucleation
+ *
+ *  The goal is *performance characterization*—not a production‑ready drop‑in.
+ *  All kernels assume:
+ *      • one thread = one grid‑cell
+ *      • state remains resident on device between timesteps
+ *  The public C interface `launch_complex_aerosol_kernels()` wraps these
+ *  kernels so that a Fortran driver (or C/​C++) can benchmark them easily.
+ *
+ *  Author  : mfw
+ *  Created : 2025.07
+ * ---------------------------------------------------------------------------
+ */
 
 #define N_AEROSPC 40
 #define N_MODE 3
@@ -17,7 +40,24 @@
     } \
 } while(0)
 
-// More realistic aerosol thermodynamics kernel
+/**
+ * @brief  Per‑cell Köhler/ISORROPIA‑style water‑uptake solver.
+ *
+ * Computes equilibrium liquid water for each log‑normal aerosol mode via
+ * 20 Picard iterations.  For realism it approximates:
+ *    • Debye–Hückel activity‑coefficients (ionic‑strength dependent)  
+ *    • Zdanovskii–Stokes–Robinson (ZSR) mixing rule
+ *
+ * @param  temp          [in]  °K array, length = ncells
+ * @param  pres          [in]  Pa  array, length = ncells
+ * @param  rh            [in]  0–1 relative humidity, length = ncells
+ * @param  aerosol_mass  [in]  dry mass  (ncells × N_MODE)
+ * @param  aerosol_water [out] updated water mass (ncells × N_MODE)
+ * @param  ncells        total number of grid cells
+ *
+ * Thread‑parallelism: one CUDA thread ↔ one grid‑cell.
+ * Arithmetic intensity: ~5 kFLOP per cell → well suited to GPUs.
+ */
 __global__ void aerosol_thermodynamics_kernel(
     const float* temp, const float* pres, const float* rh,
     float* aerosol_mass, float* aerosol_water,
@@ -63,7 +103,19 @@ __global__ void aerosol_thermodynamics_kernel(
     }
 }
 
-// Complex coagulation with size distribution
+/**
+ * @brief  Sectional Brownian coagulation over 40 size bins.
+ *
+ * For each cell the kernel loops over all (i,j) bin pairs, applies the
+ * diffusive coagulation coefficient βᵢⱼ, removes number from bins i & j and
+ * adds it to a larger recipient bin k.  A local register copy minimises
+ * global‑memory traffic.
+ *
+ * Inputs/Outputs are flattened arrays of length ncells × N_SIZE_BINS that
+ * store number concentration [#/cm³].
+ *
+ * Computational cost: O(N_BIN^2) ≃ 1600 inner‑loop iterations per thread.
+ */
 __global__ void coagulation_sectional_kernel(
     float* size_distribution, const float* temp, const float* pres,
     const float dt, const int ncells)
@@ -120,7 +172,16 @@ __global__ void coagulation_sectional_kernel(
     }
 }
 
-// Nucleation kernel
+/**
+ * @brief  Ternary H2SO4–NH3–H2O nucleation parameterisation.
+ *
+ * Adds freshly nucleated particles to the smallest modal bin when sulphuric
+ * acid exceeds 10^6 molec cm^-3 and RH > 30 %.
+ *
+ * Updates `num_conc[idx * N_MODE]` in‑place.
+ *
+ * Lightweight & branch‑light; mainly memory bound.
+ */
 __global__ void nucleation_kernel(
     float* num_conc, const float* h2so4_conc, const float* nh3_conc,
     const float* temp, const float* rh, const float dt, const int ncells)
@@ -147,6 +208,19 @@ __global__ void nucleation_kernel(
     }
 }
 
+/**
+ * @brief  Host‑side driver that launches all three GPU kernels for `nsteps`.
+ *
+ * The caller supplies **device pointers**; no allocations or H–D copies are
+ * performed inside.  The sequence per timestep is:
+ *    (1) aerosol_thermodynamics_kernel
+ *    (2) coagulation_sectional_kernel
+ *    (3) nucleation_kernel
+ * followed by a `cudaDeviceSynchronize()` to keep behaviour deterministic.
+ *
+ * This wrapper deliberately uses a single stream—future work could overlap
+ * kernels and data transfers via multiple streams or CUDA graphs.
+ */
 // Combined kernel launcher
 extern "C" {
     void launch_complex_aerosol_kernels(

@@ -1,3 +1,15 @@
+! -----------------------------------------------------------------------------
+!  Complex CPU aerosol microphysics proof‑of‑concept for CMAQ
+!
+!  This module mirrors the GPU implementation in aero_kernel_complex.cu.
+!  Provides two routines:
+!      * aerosol_thermodynamics: per‑cell Köhler/ISORROPIA‑style water uptake solver
+!      * coagulation_sectional: sectional Brownian coagulation over size bins
+!
+!  Author  : mfw
+!  Created : 2025.07
+!  Purpose : Performance characterization of aerosol microphysics kernels.
+! -----------------------------------------------------------------------------
 ! aero_kernel_complex.f90 - Complex CPU version to match GPU
 module aero_kernel_complex_cpu
   implicit none
@@ -8,6 +20,22 @@ module aero_kernel_complex_cpu
   
 contains
 
+  !> @brief Per‑cell Köhler/ISORROPIA‑style water‑uptake solver.
+  !>
+  !> Implements a Picard iteration of 20 steps per mode to compute equilibrium
+  !> liquid water content. Approximates:
+  !>   • Debye–Hückel activity‑coefficients (ionic-strength dependent)
+  !>   • Zdanovskii–Stokes–Robinson (ZSR) mixing rule
+  !>
+  !> @param temp          (in)  Temperature [K], dimension = ncells
+  !> @param pres          (in)  Pressure [Pa],    dimension = ncells
+  !> @param rh            (in)  Relative humidity (0–1), dimension = ncells
+  !> @param aerosol_mass  (in)  Dry aerosol mass, shape = (n_mode, ncells)
+  !> @param aerosol_water (out) Water mass per mode, shape = (n_mode, ncells)
+  !> @param ncells        (in)  Total number of grid cells
+  !>
+  !> Complexity: ~5 kFLOP per cell
+  !> Parallel: OpenMP, one thread per grid cell
   subroutine aerosol_thermodynamics(temp, pres, rh, aerosol_mass, aerosol_water, ncells)
     integer, intent(in) :: ncells
     real, intent(in) :: temp(ncells), pres(ncells), rh(ncells)
@@ -45,6 +73,21 @@ contains
     !$omp end parallel do
   end subroutine
 
+  !> @brief Sectional Brownian coagulation over size bins.
+  !>
+  !> For each grid cell, loops over all bin pairs (i,j), computes
+  !> diffusive coagulation coefficients βᵢⱼ, and updates a local
+  !> size distribution. Uses a register-local copy to minimize
+  !> global-memory traffic.
+  !>
+  !> @param size_dist (inout) Particle number distribution, shape = (n_size_bins, ncells)
+  !> @param temp      (in)    Temperature [K],    dimension = ncells
+  !> @param pres      (in)    Pressure [Pa],       dimension = ncells
+  !> @param dt        (in)    Timestep length [s]
+  !> @param ncells    (in)    Total number of grid cells
+  !>
+  !> Complexity: O(n_size_bins^2) per cell (~1600 inner iterations)
+  !> Parallel: OpenMP, one thread per grid cell
   subroutine coagulation_sectional(size_dist, temp, pres, dt, ncells)
     integer, intent(in) :: ncells
     real, intent(inout) :: size_dist(n_size_bins, ncells)
